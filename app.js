@@ -89,6 +89,7 @@ function span(text,style={}) { return el("span",{style},text); }
 
 // State — note: msg and pass are NOT in state to avoid re-render wiping inputs
 let state = { tab:"new", notifs:[], err:"", ok:"", revealed:null, created:false };
+let drafts = { newMsg:"", newPass:"", retrievePass:"" };
 function setState(patch) { Object.assign(state,patch); renderApp(); }
 
 // Poll notifications
@@ -182,11 +183,22 @@ function renderNew(card) {
   }
 
   card.appendChild(el("label",{style:css.lbl},"Note"));
-  const ta = el("textarea",{style:css.ta, placeholder:"Write here"});
+  const ta = el("textarea",{
+    style:css.ta,
+    placeholder:"Write here",
+    value:drafts.newMsg,
+    onInput:(e)=>{ drafts.newMsg = e.target.value; }
+  });
   card.appendChild(ta);
 
   card.appendChild(el("label",{style:css.lbl},"Password"));
-  const pi = el("input",{type:"password",style:css.inp,placeholder:"Choose a password..."});
+  const pi = el("input",{
+    type:"password",
+    style:css.inp,
+    placeholder:"Choose a password...",
+    value:drafts.newPass,
+    onInput:(e)=>{ drafts.newPass = e.target.value; }
+  });
   card.appendChild(pi);
 
   const btn = el("button",{style:css.btn});
@@ -207,6 +219,8 @@ function renderNew(card) {
       const note = {id:genId(), cipher, self_destruct:true, created_at:Date.now()};
       if (navigator.onLine) { await db("notes","POST",note); }
       else { const q=getQueue(); q.push(note); saveQueue(q); }
+      drafts.newMsg = "";
+      drafts.newPass = "";
       setState({created:true,err:""});
     } catch {
       state.err="Failed to save. Try again.";
@@ -220,7 +234,13 @@ function renderRetrieve(card) {
   if (state.ok)  card.appendChild(el("div",{style:css.suc},state.ok));
 
   card.appendChild(el("label",{style:css.lbl},"Password"));
-  const pi = el("input",{type:"password",style:css.inp,placeholder:"Enter password..."});
+  const pi = el("input",{
+    type:"password",
+    style:css.inp,
+    placeholder:"Enter password...",
+    value:drafts.retrievePass,
+    onInput:(e)=>{ drafts.retrievePass = e.target.value; }
+  });
   card.appendChild(pi);
 
   const btn = el("button",{style:css.btn});
@@ -245,6 +265,7 @@ function renderRetrieve(card) {
       if (!found) { state.err="Wrong password or no matching note."; renderApp(); return; }
       await db("notes?id=eq."+found.id,"DELETE");
       await db("notifications","POST",{note_id:found.id,time:Date.now(),read:false});
+      drafts.retrievePass = "";
       setState({revealed:text,err:"",ok:""});
     } catch { state.err="Something went wrong."; renderApp(); }
   });
