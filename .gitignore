@@ -1,0 +1,3 @@
+*.jks
+notes-twa/.gradle/
+notes-twa/**/build/

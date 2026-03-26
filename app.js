@@ -4,6 +4,7 @@ const SB = "https://yhqfdeslngsarmhcetoa.supabase.co";
 const KEY = "sb_publishable_c2O9q1-ov-siNJ6H_RCyrQ_h_TXI6EL";
 const QUEUE_KEY = "notes_offline_queue";
 const DRAFTS_KEY = "notes_drafts";
+const SENT_KEY = "notes_sent_items";
 const TWO_DAYS = 2 * 24 * 60 * 60 * 1000;
 
 // AES-256-GCM Encryption
@@ -45,6 +46,9 @@ async function db(path, method="GET", body=null) {
     },
     body: body ? JSON.stringify(body) : null
   });
+  if (!r.ok) {
+    throw new Error("Supabase request failed: " + r.status);
+  }
   const t = await r.text();
   return t ? JSON.parse(t) : null;
 }
@@ -55,7 +59,6 @@ async function purgeOldData() {
   const cutoff = Date.now() - TWO_DAYS;
   try {
     await db("notes?created_at=lt."+cutoff, "DELETE");
-    await db("notifications","DELETE").catch(()=>{});
   } catch {}
 }
 
@@ -76,6 +79,29 @@ function loadDrafts() {
 }
 function saveDrafts() {
   sessionStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+}
+function getSentNotes() {
+  try { return JSON.parse(localStorage.getItem(SENT_KEY) || "[]"); } catch { return []; }
+}
+function saveSentNotes(items) {
+  localStorage.setItem(SENT_KEY, JSON.stringify(items));
+}
+function trackSentNote(noteId) {
+  const sent = getSentNotes().filter(n => n && n.id !== noteId);
+  sent.unshift({ id:noteId, seen:false, created_at:Date.now() });
+  saveSentNotes(sent.filter(n => Date.now() - (n.created_at || 0) < TWO_DAYS));
+}
+function markSentSeen(noteId) {
+  const sent = getSentNotes().map(n => n.id === noteId ? { ...n, seen:true } : n);
+  saveSentNotes(sent);
+}
+function pruneSentNotes() {
+  const cutoff = Date.now() - TWO_DAYS;
+  saveSentNotes(getSentNotes().filter(n => (n.created_at || 0) >= cutoff));
+}
+function maybeNotifyRead(noteId) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  new Notification("Notes", { body:"Your note was retrieved.", tag:"note-read-" + noteId });
 }
 async function flushQueue() {
   const q = getQueue();
@@ -104,26 +130,40 @@ function el(tag, props={}, ...kids) {
 function span(text,style={}) { return el("span",{style},text); }
 
 // State — note: msg and pass are NOT in state to avoid re-render wiping inputs
-let state = { tab:"new", notifs:[], err:"", ok:"", revealed:null, created:false };
+let state = { tab:"new", err:"", ok:"", revealed:null, created:false, notifs:[] };
 let drafts = loadDrafts();
 function setState(patch) { Object.assign(state,patch); renderApp(); }
 
-async function loadNotifs() {
-  state.notifs = [];
-  if (!navigator.onLine) {
+async function syncNotifications() {
+  pruneSentNotes();
+  const sent = getSentNotes();
+  if (!navigator.onLine || !sent.length) {
+    state.notifs = [];
     renderApp();
     return;
   }
-  try { await db("notifications","DELETE"); } catch {}
-  renderApp();
+  try {
+    const rows = await db("notifications?order=time.desc");
+    const own = (rows || []).filter(row => sent.some(n => n.id === row.note_id));
+    for (const row of own) {
+      const local = sent.find(n => n.id === row.note_id);
+      if (local && !local.seen) {
+        maybeNotifyRead(row.note_id);
+        markSentSeen(row.note_id);
+      }
+    }
+    state.notifs = own;
+    renderApp();
+  } catch {}
 }
 
 // Init
 (async()=>{
-  await loadNotifs();
   flushQueue();
   purgeOldData();
+  syncNotifications();
 })();
+setInterval(()=>{ if (navigator.onLine) syncNotifications(); }, 9000);
 
 // Styles
 const css = {
@@ -147,12 +187,11 @@ const css = {
   suc:  {color:"#80c0a0",fontSize:"13px",marginBottom:"0.75rem",padding:"8px 12px",background:"#121e18",borderRadius:"6px"},
   rev:  {background:"#0d0d0f",border:"1px solid #2a2530",borderRadius:"8px",padding:"1rem",
     marginTop:"1rem",whiteSpace:"pre-wrap",fontSize:"15px",color:"#e0dae8",lineHeight:"1.65"},
-  ni:   (read)=>({display:"flex",gap:"10px",padding:"11px 14px",borderBottom:"1px solid #1a1820",
-    background:read?"transparent":"#16121e"}),
-  dot:  {width:"7px",height:"7px",borderRadius:"50%",background:"#c9a0f0",marginTop:"5px",flexShrink:"0",display:"inline-block"},
-  badge:{position:"absolute",top:"5px",right:"6px",background:"#c9a0f0",color:"#0d0d0f",
-    borderRadius:"50%",width:"15px",height:"15px",fontSize:"9px",fontWeight:"700",
-    display:"flex",alignItems:"center",justifyContent:"center"}
+  empty:{textAlign:"center",color:"#6b6475",fontSize:"14px"}
+  ,
+  ni:   {padding:"11px 14px",borderBottom:"1px solid #1a1820"},
+  dot:  {width:"7px",height:"7px",borderRadius:"50%",background:"#c9a0f0",marginTop:"6px",flexShrink:"0",display:"inline-block"},
+  row:  {display:"flex",gap:"10px"}
 };
 
 // Render
@@ -172,9 +211,13 @@ function renderApp() {
   const tabBar = el("div",{style:css.tabs});
   for (const [t,label] of [["new","New"],["retrieve","Retrieve"],["boom","Boom"]]) {
     const btn = el("button",{style:css.tab(state.tab===t), onClick:()=>{
-      setState({tab:t,err:"",ok:"",revealed:null,created:false,notifs:[]});
+      setState({tab:t,err:"",ok:"",revealed:null,created:false});
     }}, label);
     tabBar.appendChild(btn);
+  }
+
+  if (state.notifs.length && state.tab !== "boom") {
+    app.appendChild(el("div",{style:{...css.suc,marginBottom:"1rem"}},"Your note was retrieved."));
   }
   app.appendChild(tabBar);
 
@@ -232,6 +275,7 @@ function renderNew(card) {
       const note = {id:genId(), cipher, self_destruct:true, created_at:Date.now()};
       if (navigator.onLine) { await db("notes","POST",note); }
       else { const q=getQueue(); q.push(note); saveQueue(q); }
+      trackSentNote(note.id);
       drafts.newMsg = "";
       drafts.newPass = "";
       saveDrafts();
@@ -278,23 +322,32 @@ function renderRetrieve(card) {
       }
       if (!found) { state.err="Wrong password or no matching note."; renderApp(); return; }
       await db("notes?id=eq."+found.id,"DELETE");
-      await db("notifications","DELETE").catch(()=>{});
+      await db("notifications","POST",{note_id:found.id,time:Date.now()});
       drafts.retrievePass = "";
       saveDrafts();
-      setState({revealed:text,err:"",ok:"",notifs:[]});
+      setState({revealed:text,err:"",ok:""});
     } catch { state.err="Something went wrong."; renderApp(); }
   });
 }
 
 function renderBoom(card) {
-  card.appendChild(el("div",{style:{textAlign:"center",color:"#6b6475",fontSize:"14px"}},"No notifications yet."));
-}
-
-async function markAllRead() {
-  try {
-    await db("notifications","DELETE").catch(()=>{});
-    setState({notifs:[]});
-  } catch {}
+  if (!state.notifs.length) {
+    card.appendChild(el("div",{style:css.empty},"No notifications yet."));
+    return;
+  }
+  for (const n of state.notifs) {
+    const row = el("div",{style:css.ni});
+    const wrap = el("div",{style:css.row});
+    wrap.appendChild(el("span",{style:css.dot}));
+    const info = el("div");
+    info.appendChild(el("div",{style:{fontSize:"13px",color:"#c9c5d0"}},
+      "Your note ",span("#"+String(n.note_id || "").slice(0,8).toUpperCase(),{color:"#c9a0f0"})," was retrieved."
+    ));
+    info.appendChild(el("div",{style:{fontSize:"11px",color:"#6b6475",marginTop:"2px"}},fmt(n.time)));
+    wrap.appendChild(info);
+    row.appendChild(wrap);
+    card.appendChild(row);
+  }
 }
 
 // Register service worker
@@ -303,5 +356,8 @@ if ("serviceWorker" in navigator) {
 }
 
 renderApp();
-window.addEventListener("online",  ()=>{ flushQueue(); renderApp(); });
+if ("Notification" in window && Notification.permission === "default") {
+  Notification.requestPermission().catch(()=>{});
+}
+window.addEventListener("online",  ()=>{ flushQueue(); syncNotifications(); renderApp(); });
 window.addEventListener("offline", ()=>renderApp());

@@ -1,5 +1,5 @@
-const V = "v3";
-const CACHE = ["/", "index.html", "app.js", "manifest.json"];
+const V = "v4";
+const CACHE = ["/", "index.html", "app.js", "manifest.json", "icon-192.png", "icon-512.png", "icon-maskable.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(V).then(c => c.addAll(CACHE)));
