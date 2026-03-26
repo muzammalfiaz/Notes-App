@@ -1,208 +1,251 @@
-const { useState, useEffect, useRef } = React;
+'use strict';
 
-const SUPABASE_URL = "https://yhqfdeslngsarmhcetoa.supabase.co";
-const SUPABASE_KEY = "sb_publishable_c2O9q1-ov-siNJ6H_RCyrQ_h_TXI6EL";
+const SB = "https://yhqfdeslngsarmhcetoa.supabase.co";
+const KEY = "sb_publishable_c2O9q1-ov-siNJ6H_RCyrQ_h_TXI6EL";
+const QUEUE_KEY = "notes_offline_queue";
 
-const api = async (path, method = "GET", body = null) => {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+// AES-256-GCM Encryption
+async function deriveKey(pass) {
+  const enc = new TextEncoder();
+  const raw = await crypto.subtle.importKey("raw", enc.encode(pass), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name:"PBKDF2", salt: enc.encode("notes-salt-v1"), iterations:100000, hash:"SHA-256" },
+    raw, { name:"AES-GCM", length:256 }, false, ["encrypt","decrypt"]
+  );
+}
+async function encryptMsg(text, pass) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(pass);
+  const ct = await crypto.subtle.encrypt({ name:"AES-GCM", iv }, key, new TextEncoder().encode(text));
+  const buf = new Uint8Array(iv.byteLength + ct.byteLength);
+  buf.set(iv, 0); buf.set(new Uint8Array(ct), iv.byteLength);
+  return btoa(String.fromCharCode(...buf));
+}
+async function decryptMsg(b64, pass) {
+  try {
+    const buf = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const iv = buf.slice(0,12), ct = buf.slice(12);
+    const key = await deriveKey(pass);
+    const pt = await crypto.subtle.decrypt({ name:"AES-GCM", iv }, key, ct);
+    return new TextDecoder().decode(pt);
+  } catch { return null; }
+}
+
+// Supabase API
+async function db(path, method="GET", body=null) {
+  const r = await fetch(SB+"/rest/v1/"+path, {
     method,
-    headers: {
-      "apikey": SUPABASE_KEY,
-      "Authorization": `Bearer ${SUPABASE_KEY}`,
-      "Content-Type": "application/json",
-      "Prefer": method === "POST" ? "return=representation" : ""
+    headers:{
+      "apikey":KEY,
+      "Authorization":"Bearer "+KEY,
+      "Content-Type":"application/json",
+      "Prefer": method==="POST"?"return=representation":""
     },
     body: body ? JSON.stringify(body) : null
   });
-  if (!res.ok) { const e = await res.text(); throw new Error(e); }
-  const txt = await res.text();
-  return txt ? JSON.parse(txt) : null;
-};
-
-function encrypt(text, pass) {
-  return btoa(unescape(encodeURIComponent(text + "||" + pass)));
+  const t = await r.text();
+  return t ? JSON.parse(t) : null;
 }
-function decrypt(cipher, pass) {
+
+// Offline queue
+function getQueue() { try { return JSON.parse(localStorage.getItem(QUEUE_KEY)||"[]"); } catch { return []; } }
+function saveQueue(q) { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); }
+async function flushQueue() {
+  const q = getQueue();
+  if (!q.length) return;
+  const remaining = [];
+  for (const item of q) {
+    try { await db("notes","POST",item); } catch { remaining.push(item); }
+  }
+  saveQueue(remaining);
+  if (remaining.length < q.length) renderApp();
+}
+window.addEventListener("online", flushQueue);
+
+// Helpers
+function genId() { return Date.now().toString(36)+Math.random().toString(36).slice(2,5); }
+function fmt(ts) { return new Date(ts).toLocaleString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}); }
+function el(tag, props={}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k,v] of Object.entries(props)) {
+    if (k==="style" && typeof v==="object") Object.assign(e.style, v);
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2).toLowerCase(), v);
+    else e[k] = v;
+  }
+  for (const k of kids) k != null && e.appendChild(typeof k==="string" ? document.createTextNode(k) : k);
+  return e;
+}
+function span(text, style={}) { return el("span",{style},text); }
+
+// State
+let state = { tab:"new", notifs:[], loading:false, err:"", ok:"", revealed:null, created:false };
+function setState(patch) { Object.assign(state, patch); renderApp(); }
+
+// Poll notifications
+async function loadNotifs() {
   try {
-    const dec = decodeURIComponent(escape(atob(cipher)));
-    const idx = dec.lastIndexOf("||");
-    if (idx === -1) return null;
-    if (dec.slice(idx + 2) === pass) return dec.slice(0, idx);
-    return null;
-  } catch { return null; }
+    const d = await db("notifications?order=time.desc");
+    state.notifs = d||[];
+    renderApp();
+  } catch {}
 }
-function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
-function fmt(ts) { return new Date(ts).toLocaleDateString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); }
+setInterval(() => { if(navigator.onLine) loadNotifs(); }, 9000);
+loadNotifs();
+flushQueue();
 
-const s = {
-  app: { minHeight: "100vh", background: "#0d0d0f", color: "#c9c5d0", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", padding: "2rem 1rem", maxWidth: 480, margin: "0 auto" },
-  logo: { fontSize: 22, fontWeight: 600, color: "#e0dae8", letterSpacing: "0.05em", textAlign: "center", marginBottom: "2rem" },
-  tabs: { display: "flex", marginBottom: "1.5rem", borderRadius: 10, overflow: "hidden", border: "1px solid #2a2530", background: "#131117" },
-  tab: (a) => ({ flex: 1, padding: "10px 0", fontSize: 12, cursor: "pointer", border: "none", background: a ? "#2a2435" : "transparent", color: a ? "#c9a0f0" : "#6b6475", fontWeight: a ? 600 : 400, position: "relative" }),
-  card: { background: "#131117", border: "1px solid #2a2530", borderRadius: 12, padding: "1.25rem" },
-  label: { fontSize: 12, color: "#6b6475", marginBottom: 6, display: "block", letterSpacing: "0.06em", textTransform: "uppercase" },
-  input: { width: "100%", background: "#0d0d0f", border: "1px solid #2a2530", borderRadius: 8, padding: "10px 12px", color: "#c9c5d0", fontSize: 14, outline: "none", marginBottom: "1rem" },
-  textarea: { width: "100%", background: "#0d0d0f", border: "1px solid #2a2530", borderRadius: 8, padding: "10px 12px", color: "#c9c5d0", fontSize: 14, outline: "none", marginBottom: "1rem", resize: "vertical", minHeight: 100 },
-  btn: { width: "100%", padding: "11px", background: "#2a1f3d", border: "1px solid #4a3470", borderRadius: 8, color: "#c9a0f0", fontSize: 14, fontWeight: 600, cursor: "pointer" },
-  error: { color: "#c06080", fontSize: 13, marginBottom: "0.75rem", padding: "8px 12px", background: "#1e1218", borderRadius: 6 },
-  success: { color: "#80c0a0", fontSize: 13, marginBottom: "0.75rem", padding: "8px 12px", background: "#121e18", borderRadius: 6 },
-  revealBox: { background: "#0d0d0f", border: "1px solid #2a2530", borderRadius: 8, padding: "1rem", marginTop: "1rem", whiteSpace: "pre-wrap", fontSize: 14, color: "#e0dae8", lineHeight: 1.6 },
-  noteRow: { background: "#0d0d0f", border: "1px solid #2a2530", borderRadius: 8, padding: "12px", marginBottom: 10 },
-  notifItem: (read) => ({ display: "flex", gap: 10, padding: "10px 12px", borderBottom: "1px solid #1a1820", background: read ? "transparent" : "#16121e" }),
-  badgeCount: { position: "absolute", top: 5, right: 8, background: "#c9a0f0", color: "#0d0d0f", borderRadius: "50%", width: 15, height: 15, fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }
+// Styles
+const css = {
+  app:  { padding:"1.5rem 1rem 2rem", maxWidth:"460px", margin:"0 auto" },
+  logo: { fontSize:"20px", fontWeight:"600", color:"#e0dae8", textAlign:"center", marginBottom:"1.75rem", letterSpacing:"0.06em" },
+  tabs: { display:"flex", borderRadius:"10px", overflow:"hidden", border:"1px solid #2a2530", background:"#131117", marginBottom:"1.5rem" },
+  tab:  (a) => ({ flex:"1", padding:"11px 0", fontSize:"13px", cursor:"pointer", border:"none",
+    background: a?"#2a2435":"transparent", color: a?"#c9a0f0":"#6b6475", fontWeight: a?"600":"400", position:"relative" }),
+  card: { background:"#131117", border:"1px solid #2a2530", borderRadius:"12px", padding:"1.25rem" },
+  lbl:  { fontSize:"11px", color:"#6b6475", display:"block", marginBottom:"5px", letterSpacing:"0.07em", textTransform:"uppercase" },
+  inp:  { width:"100%", background:"#0d0d0f", border:"1px solid #2a2530", borderRadius:"8px",
+    padding:"11px 12px", color:"#c9c5d0", fontSize:"15px", outline:"none", marginBottom:"1rem",
+    WebkitAppearance:"none" },
+  ta:   { width:"100%", background:"#0d0d0f", border:"1px solid #2a2530", borderRadius:"8px",
+    padding:"11px 12px", color:"#c9c5d0", fontSize:"15px", outline:"none", marginBottom:"1rem",
+    resize:"vertical", minHeight:"110px" },
+  btn:  { width:"100%", padding:"13px", background:"#2a1f3d", border:"1px solid #4a3470",
+    borderRadius:"8px", color:"#c9a0f0", fontSize:"15px", fontWeight:"600", cursor:"pointer" },
+  err:  { color:"#c06080", fontSize:"13px", marginBottom:"0.75rem", padding:"8px 12px", background:"#1e1218", borderRadius:"6px" },
+  suc:  { color:"#80c0a0", fontSize:"13px", marginBottom:"0.75rem", padding:"8px 12px", background:"#121e18", borderRadius:"6px" },
+  rev:  { background:"#0d0d0f", border:"1px solid #2a2530", borderRadius:"8px", padding:"1rem",
+    marginTop:"1rem", whiteSpace:"pre-wrap", fontSize:"15px", color:"#e0dae8", lineHeight:"1.65" },
+  ni:   (read) => ({ display:"flex", gap:"10px", padding:"11px 14px", borderBottom:"1px solid #1a1820",
+    background: read?"transparent":"#16121e" }),
+  dot:  { width:"7px", height:"7px", borderRadius:"50%", background:"#c9a0f0", marginTop:"5px", flexShrink:"0", display:"inline-block" },
+  badge:{ position:"absolute", top:"5px", right:"6px", background:"#c9a0f0", color:"#0d0d0f",
+    borderRadius:"50%", width:"15px", height:"15px", fontSize:"9px", fontWeight:"700",
+    display:"flex", alignItems:"center", justifyContent:"center" }
 };
 
-function App() {
-  const [tab, setTab] = useState("create");
-  const [notes, setNotes] = useState([]);
-  const [notifs, setNotifs] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [msg, setMsg] = useState("");
-  const [pass, setPass] = useState("");
-  const [sd, setSd] = useState(false);
-  const [created, setCreated] = useState(false);
-  const [findPass, setFindPass] = useState("");
-  const [revealed, setRevealed] = useState(null);
-  const [err, setErr] = useState("");
-  const [ok, setOk] = useState("");
-  const pollRef = useRef(null);
+// Render
+function renderApp() {
+  const root = document.getElementById("root");
+  root.innerHTML = "";
+  const app = el("div",{style:css.app});
+  app.appendChild(el("div",{style:css.logo},"NOTES"));
 
-  const unread = notifs.filter(n => !n.read).length;
-
-  async function loadNotes() { try { setNotes(await api("notes?order=created_at.desc") || []); } catch {} }
-  async function loadNotifs() { try { setNotifs(await api("notifications?order=time.desc") || []); } catch {} }
-
-  useEffect(() => {
-    loadNotes(); loadNotifs();
-    pollRef.current = setInterval(loadNotifs, 8000);
-    return () => clearInterval(pollRef.current);
-  }, []);
-
-  async function createNote() {
-    if (!msg.trim()) return setErr("Write something first.");
-    if (pass.length < 3) return setErr("Password must be at least 3 characters.");
-    setErr(""); setLoading(true);
-    try {
-      await api("notes", "POST", { id: genId(), cipher: encrypt(msg.trim(), pass), self_destruct: sd, created_at: Date.now() });
-      setCreated(true); setMsg(""); setPass(""); setSd(false);
-      await loadNotes();
-    } catch { setErr("Failed to save. Try again."); }
-    setLoading(false);
+  if (!navigator.onLine) {
+    const q = getQueue();
+    app.appendChild(el("div",{style:{...css.err,marginBottom:"1rem"}},
+      q.length ? "Offline — "+q.length+" note(s) will sync when connected." : "You are offline."
+    ));
   }
 
-  async function revealNote() {
-    setErr(""); setRevealed(null); setOk(""); setLoading(true);
-    try {
-      const all = await api("notes?order=created_at.desc");
-      const note = (all || []).find(n => decrypt(n.cipher, findPass) !== null);
-      if (!note) { setErr("Wrong password or no matching note."); setLoading(false); return; }
-      const text = decrypt(note.cipher, findPass);
-      await api("notes?id=eq." + note.id, "DELETE");
-      await api("notifications", "POST", { note_id: note.id, time: Date.now(), read: false });
-      if (note.self_destruct) setOk("This note self-destructed after reading.");
-      setRevealed(text);
-      await loadNotes();
-    } catch { setErr("Something went wrong."); }
-    setLoading(false);
+  const unread = state.notifs.filter(n=>!n.read).length;
+  const tabBar = el("div",{style:css.tabs});
+  for (const [t,label] of [["new","New"],["retrieve","Retrieve"],["boom","Boom"]]) {
+    const btn = el("button",{style:css.tab(state.tab===t), onClick:()=>{
+      setState({tab:t,err:"",ok:"",revealed:null,created:false});
+      if(t==="boom") markAllRead();
+    }}, label);
+    if (t==="boom" && unread>0) btn.appendChild(el("span",{style:css.badge},String(unread)));
+    tabBar.appendChild(btn);
   }
+  app.appendChild(tabBar);
 
-  async function markAllRead() {
-    try { await api("notifications?read=eq.false", "PATCH", { read: true }); await loadNotifs(); } catch {}
-  }
+  const card = el("div",{style:css.card});
+  if (state.tab==="new") renderNew(card);
+  else if (state.tab==="retrieve") renderRetrieve(card);
+  else renderBoom(card);
 
-  async function deleteNote(id) {
-    try { await api("notes?id=eq." + id, "DELETE"); await loadNotes(); } catch {}
-  }
-
-  return (
-    <div style={s.app}>
-      <div style={s.logo}>📝 NOTES</div>
-      <div style={s.tabs}>
-        {[["create","✏️ New"],["retrieve","🔓 Retrieve"],["vault","🗄️ Vault"],["notifs","🔔 Alerts"]].map(([t, label]) => (
-          <button key={t} style={s.tab(tab===t)} onClick={async () => {
-            setTab(t); setErr(""); setOk(""); setCreated(false); setRevealed(null);
-            if (t === "vault") await loadNotes();
-            if (t === "notifs") { await loadNotifs(); await markAllRead(); }
-          }}>
-            {label}
-            {t === "notifs" && unread > 0 && <span style={s.badgeCount}>{unread}</span>}
-          </button>
-        ))}
-      </div>
-
-      {tab === "create" && (
-        <div style={s.card}>
-          {err && <div style={s.error}>{err}</div>}
-          {created ? (
-            <>
-              <div style={s.success}>✅ Note saved! Share your password with the recipient.</div>
-              <button style={s.btn} onClick={() => setCreated(false)}>✏️ Write another</button>
-            </>
-          ) : (
-            <>
-              <label style={s.label}>Message</label>
-              <textarea style={s.textarea} placeholder="Write your secret message..." value={msg} onChange={e => setMsg(e.target.value)} />
-              <label style={s.label}>Password</label>
-              <input type="password" style={s.input} placeholder="Choose a password..." value={pass} onChange={e => setPass(e.target.value)} />
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "1rem" }}>
-                <input type="checkbox" id="sd" checked={sd} onChange={e => setSd(e.target.checked)} />
-                <label htmlFor="sd" style={{ fontSize: 13, color: "#6b6475", cursor: "pointer" }}>Self-destruct after reading</label>
-              </div>
-              <button style={s.btn} disabled={loading} onClick={createNote}>{loading ? "Encrypting..." : "🔒 Encrypt & lock"}</button>
-            </>
-          )}
-        </div>
-      )}
-
-      {tab === "retrieve" && (
-        <div style={s.card}>
-          {err && <div style={s.error}>{err}</div>}
-          {ok && <div style={s.success}>{ok}</div>}
-          <label style={s.label}>Password</label>
-          <input type="password" style={s.input} placeholder="Enter password..." value={findPass} onChange={e => setFindPass(e.target.value)} />
-          <button style={s.btn} disabled={loading} onClick={revealNote}>{loading ? "Decrypting..." : "🔓 Decrypt & reveal"}</button>
-          {revealed && <div style={s.revealBox}>{revealed}</div>}
-        </div>
-      )}
-
-      {tab === "vault" && (
-        <div>
-          {notes.length === 0
-            ? <div style={{ ...s.card, textAlign: "center", color: "#6b6475", fontSize: 14 }}>No notes stored yet.</div>
-            : notes.map(n => (
-              <div key={n.id} style={s.noteRow}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13, color: "#c9a0f0", fontWeight: 600 }}>#{(n.id||"").toUpperCase()}</div>
-                    <div style={{ fontSize: 12, color: "#6b6475", marginTop: 3 }}>{fmt(n.created_at)}</div>
-                  </div>
-                  <button onClick={() => deleteNote(n.id)} style={{ background: "none", border: "none", color: "#4a2535", cursor: "pointer", fontSize: 18 }}>✕</button>
-                </div>
-              </div>
-            ))
-          }
-        </div>
-      )}
-
-      {tab === "notifs" && (
-        <div style={{ ...s.card, padding: 0, overflow: "hidden" }}>
-          {notifs.length === 0
-            ? <div style={{ textAlign: "center", color: "#6b6475", fontSize: 14, padding: "1.5rem" }}>No notifications yet.</div>
-            : notifs.map(n => (
-              <div key={n.id} style={s.notifItem(n.read)}>
-                <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#c9a0f0", marginTop: 5, flexShrink: 0, display: "inline-block" }} />
-                <div>
-                  <div style={{ fontSize: 13, color: "#c9c5d0" }}>Note <span style={{ color: "#c9a0f0" }}>#{(n.note_id||"").toUpperCase()}</span> was read.</div>
-                  <div style={{ fontSize: 11, color: "#6b6475", marginTop: 2 }}>{fmt(n.time)}</div>
-                </div>
-              </div>
-            ))
-          }
-        </div>
-      )}
-    </div>
-  );
+  app.appendChild(card);
+  root.appendChild(app);
 }
 
-const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(React.createElement(App));
+function renderNew(card) {
+  if (state.err) card.appendChild(el("div",{style:css.err},state.err));
+  if (state.created) {
+    card.appendChild(el("div",{style:css.suc},"Note encrypted and saved. Share your password with the recipient. Every note self-destructs after reading."));
+    card.appendChild(el("button",{style:css.btn,onClick:()=>setState({created:false,err:"",ok:""})}, "Write another"));
+    return;
+  }
+  card.appendChild(el("label",{style:css.lbl},"Message"));
+  const ta = el("textarea",{style:css.ta,placeholder:"Write your secret message..."});
+  card.appendChild(ta);
+  card.appendChild(el("label",{style:css.lbl},"Password"));
+  const pi = el("input",{type:"password",style:css.inp,placeholder:"Choose a password..."});
+  card.appendChild(pi);
+  card.appendChild(el("button",{style:css.btn,onClick:async()=>{
+    const msg=ta.value.trim(), pass=pi.value;
+    if(!msg) return setState({err:"Write something first."});
+    if(pass.length<3) return setState({err:"Password needs at least 3 characters."});
+    setState({err:"",loading:true});
+    try {
+      const cipher = await encryptMsg(msg, pass);
+      const note = {id:genId(),cipher,self_destruct:true,created_at:Date.now()};
+      if(navigator.onLine) { await db("notes","POST",note); }
+      else { const q=getQueue(); q.push(note); saveQueue(q); }
+      setState({created:true,loading:false});
+    } catch { setState({err:"Failed to save. Try again.",loading:false}); }
+  }}, state.loading?"Encrypting...":"Encrypt & lock"));
+}
+
+function renderRetrieve(card) {
+  if (state.err) card.appendChild(el("div",{style:css.err},state.err));
+  if (state.ok)  card.appendChild(el("div",{style:css.suc},state.ok));
+  card.appendChild(el("label",{style:css.lbl},"Password"));
+  const pi = el("input",{type:"password",style:css.inp,placeholder:"Enter password..."});
+  card.appendChild(pi);
+  card.appendChild(el("button",{style:css.btn,onClick:async()=>{
+    const pass=pi.value;
+    setState({err:"",ok:"",revealed:null,loading:true});
+    try {
+      const all = await db("notes?order=created_at.desc");
+      let found=null, text=null;
+      for(const n of (all||[])){
+        const t = await decryptMsg(n.cipher,pass);
+        if(t!==null){found=n;text=t;break;}
+      }
+      if(!found) return setState({err:"Wrong password or no matching note.",loading:false});
+      await db("notes?id=eq."+found.id,"DELETE");
+      await db("notifications","POST",{note_id:found.id,time:Date.now(),read:false});
+      setState({revealed:text,loading:false});
+    } catch { setState({err:"Something went wrong.",loading:false}); }
+  }}, state.loading?"Decrypting...":"Decrypt & reveal"));
+  if(state.revealed) card.appendChild(el("div",{style:css.rev},state.revealed));
+}
+
+function renderBoom(card) {
+  card.style.padding="0";
+  card.style.overflow="hidden";
+  if(!state.notifs.length){
+    card.style.padding="1.25rem";
+    card.appendChild(el("div",{style:{textAlign:"center",color:"#6b6475",fontSize:"14px"}},"No notifications yet."));
+    return;
+  }
+  for(const n of state.notifs){
+    const row=el("div",{style:css.ni(n.read)});
+    row.appendChild(el("span",{style:css.dot}));
+    const info=el("div");
+    info.appendChild(el("div",{style:{fontSize:"13px",color:"#c9c5d0"}},
+      "Note ",span("#"+(n.note_id||"").slice(0,8).toUpperCase(),{color:"#c9a0f0"})," was read."
+    ));
+    info.appendChild(el("div",{style:{fontSize:"11px",color:"#6b6475",marginTop:"2px"}},fmt(n.time)));
+    row.appendChild(info);
+    card.appendChild(row);
+  }
+}
+
+async function markAllRead() {
+  try {
+    await db("notifications?read=eq.false","PATCH",{read:true});
+    setTimeout(async()=>{
+      await db("notifications","DELETE").catch(()=>{});
+      setState({notifs:[]});
+    },1200);
+  } catch {}
+}
+
+// Register service worker
+if("serviceWorker" in navigator){
+  navigator.serviceWorker.register("sw.js").catch(()=>{});
+}
+
+renderApp();
+window.addEventListener("online",  ()=>{ flushQueue(); renderApp(); });
+window.addEventListener("offline", ()=>renderApp());

@@ -1,7 +1,6 @@
 {
   "name": "Notes",
   "short_name": "Notes",
-  "description": "Encrypted secret notes",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0d0d0f",
