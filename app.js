@@ -204,14 +204,14 @@ function renderApp() {
     ));
   }
 
-  if (state.alert && state.tab !== "activity") {
+  if (state.alert) {
     app.appendChild(el("div",{style:{...css.suc,marginBottom:"1rem"}},state.alert));
   }
 
   const tabBar = el("div",{style:css.tabs});
-  for (const [t,label] of [["new","New"],["retrieve","Retrieve"],["activity","Activity"]]) {
+  for (const [t,label] of [["new","New"],["retrieve","Retrieve"]]) {
     const btn = el("button",{style:css.tab(state.tab===t), onClick:()=>{
-      setState({tab:t,err:"",ok:"",revealed:null,created:false,alert:t==="activity"?"":state.alert});
+      setState({tab:t,err:"",ok:"",revealed:null,created:false});
     }}, label);
     tabBar.appendChild(btn);
   }
@@ -219,8 +219,7 @@ function renderApp() {
 
   const card = el("div",{style:css.card});
   if (state.tab==="new") renderNew(card);
-  else if (state.tab==="retrieve") renderRetrieve(card);
-  else renderActivity(card);
+  else renderRetrieve(card);
 
   app.appendChild(card);
   root.appendChild(app);
@@ -229,7 +228,7 @@ function renderApp() {
 function renderNew(card) {
   if (state.err) card.appendChild(el("div",{style:css.err},state.err));
   if (state.created) {
-    card.appendChild(el("div",{style:css.suc},"Note encrypted and saved. Share your password with the recipient. Every note self-destructs after reading."));
+    card.appendChild(el("div",{style:css.suc},"Note encrypted and saved. Every note self-destructs after reading."));
     card.appendChild(el("button",{style:css.btn,onClick:()=>setState({created:false,err:"",ok:""})}, "Write another"));
     return;
   }
@@ -324,10 +323,6 @@ function renderRetrieve(card) {
       setState({revealed:text,err:"",ok:""});
     } catch { state.err="Something went wrong."; renderApp(); }
   });
-}
-
-function renderActivity(card) {
-  card.appendChild(el("div",{style:css.empty},"No activity stored."));
 }
 
 // Register service worker
