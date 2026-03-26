@@ -55,7 +55,7 @@ async function purgeOldData() {
   const cutoff = Date.now() - TWO_DAYS;
   try {
     await db("notes?created_at=lt."+cutoff, "DELETE");
-    await db("notifications?time=lt."+cutoff, "DELETE");
+    await db("notifications","DELETE").catch(()=>{});
   } catch {}
 }
 
@@ -108,15 +108,15 @@ let state = { tab:"new", notifs:[], err:"", ok:"", revealed:null, created:false 
 let drafts = loadDrafts();
 function setState(patch) { Object.assign(state,patch); renderApp(); }
 
-// Poll notifications
 async function loadNotifs() {
-  try {
-    const d = await db("notifications?order=time.desc");
-    state.notifs = d||[];
+  state.notifs = [];
+  if (!navigator.onLine) {
     renderApp();
-  } catch {}
+    return;
+  }
+  try { await db("notifications","DELETE"); } catch {}
+  renderApp();
 }
-setInterval(()=>{ if(navigator.onLine) loadNotifs(); }, 9000);
 
 // Init
 (async()=>{
@@ -169,14 +169,11 @@ function renderApp() {
     ));
   }
 
-  const unread = state.notifs.filter(n=>!n.read).length;
   const tabBar = el("div",{style:css.tabs});
   for (const [t,label] of [["new","New"],["retrieve","Retrieve"],["boom","Boom"]]) {
     const btn = el("button",{style:css.tab(state.tab===t), onClick:()=>{
-      setState({tab:t,err:"",ok:"",revealed:null,created:false});
-      if(t==="boom") markAllRead();
+      setState({tab:t,err:"",ok:"",revealed:null,created:false,notifs:[]});
     }}, label);
-    if (t==="boom" && unread>0) btn.appendChild(el("span",{style:css.badge},String(unread)));
     tabBar.appendChild(btn);
   }
   app.appendChild(tabBar);
@@ -290,33 +287,13 @@ function renderRetrieve(card) {
 }
 
 function renderBoom(card) {
-  card.style.padding="0";
-  card.style.overflow="hidden";
-  if (!state.notifs.length) {
-    card.style.padding="1.25rem";
-    card.appendChild(el("div",{style:{textAlign:"center",color:"#6b6475",fontSize:"14px"}},"No notifications yet."));
-    return;
-  }
-  for (const n of state.notifs) {
-    const row = el("div",{style:css.ni(n.read)});
-    row.appendChild(el("span",{style:css.dot}));
-    const info = el("div");
-    info.appendChild(el("div",{style:{fontSize:"13px",color:"#c9c5d0"}},
-      "Note ",span("#"+(n.note_id||"").slice(0,8).toUpperCase(),{color:"#c9a0f0"})," was read."
-    ));
-    info.appendChild(el("div",{style:{fontSize:"11px",color:"#6b6475",marginTop:"2px"}},fmt(n.time)));
-    row.appendChild(info);
-    card.appendChild(row);
-  }
+  card.appendChild(el("div",{style:{textAlign:"center",color:"#6b6475",fontSize:"14px"}},"No notifications yet."));
 }
 
 async function markAllRead() {
   try {
-    await db("notifications?read=eq.false","PATCH",{read:true});
-    setTimeout(async()=>{
-      await db("notifications","DELETE").catch(()=>{});
-      setState({notifs:[]});
-    },1200);
+    await db("notifications","DELETE").catch(()=>{});
+    setState({notifs:[]});
   } catch {}
 }
 
