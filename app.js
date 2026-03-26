@@ -4,7 +4,6 @@ const SB = "https://yhqfdeslngsarmhcetoa.supabase.co";
 const KEY = "sb_publishable_c2O9q1-ov-siNJ6H_RCyrQ_h_TXI6EL";
 const QUEUE_KEY = "notes_offline_queue";
 const DRAFTS_KEY = "notes_drafts";
-const SENT_KEY = "notes_sent_items";
 const TWO_DAYS = 2 * 24 * 60 * 60 * 1000;
 
 // AES-256-GCM Encryption
@@ -80,29 +79,6 @@ function loadDrafts() {
 function saveDrafts() {
   sessionStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
 }
-function getSentNotes() {
-  try { return JSON.parse(localStorage.getItem(SENT_KEY) || "[]"); } catch { return []; }
-}
-function saveSentNotes(items) {
-  localStorage.setItem(SENT_KEY, JSON.stringify(items));
-}
-function trackSentNote(noteId) {
-  const sent = getSentNotes().filter(n => n && n.id !== noteId);
-  sent.unshift({ id:noteId, seen:false, created_at:Date.now() });
-  saveSentNotes(sent.filter(n => Date.now() - (n.created_at || 0) < TWO_DAYS));
-}
-function markSentSeen(noteId) {
-  const sent = getSentNotes().map(n => n.id === noteId ? { ...n, seen:true } : n);
-  saveSentNotes(sent);
-}
-function pruneSentNotes() {
-  const cutoff = Date.now() - TWO_DAYS;
-  saveSentNotes(getSentNotes().filter(n => (n.created_at || 0) >= cutoff));
-}
-function maybeNotifyRead(noteId) {
-  if (!("Notification" in window) || Notification.permission !== "granted") return;
-  new Notification("Notes", { body:"Your note was retrieved.", tag:"note-read-" + noteId });
-}
 async function flushQueue() {
   const q = getQueue();
   if (!q.length) return;
@@ -116,7 +92,6 @@ async function flushQueue() {
 
 // Helpers
 function genId() { return Date.now().toString(36)+Math.random().toString(36).slice(2,5); }
-function fmt(ts) { return new Date(ts).toLocaleString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}); }
 function el(tag, props={}, ...kids) {
   const e = document.createElement(tag);
   for (const [k,v] of Object.entries(props)) {
@@ -127,43 +102,17 @@ function el(tag, props={}, ...kids) {
   for (const k of kids) k!=null && e.appendChild(typeof k==="string"?document.createTextNode(k):k);
   return e;
 }
-function span(text,style={}) { return el("span",{style},text); }
 
 // State — note: msg and pass are NOT in state to avoid re-render wiping inputs
-let state = { tab:"new", err:"", ok:"", revealed:null, created:false, notifs:[] };
+let state = { tab:"new", err:"", ok:"", revealed:null, created:false };
 let drafts = loadDrafts();
 function setState(patch) { Object.assign(state,patch); renderApp(); }
-
-async function syncNotifications() {
-  pruneSentNotes();
-  const sent = getSentNotes();
-  if (!navigator.onLine || !sent.length) {
-    state.notifs = [];
-    renderApp();
-    return;
-  }
-  try {
-    const rows = await db("notifications?order=time.desc");
-    const own = (rows || []).filter(row => sent.some(n => n.id === row.note_id));
-    for (const row of own) {
-      const local = sent.find(n => n.id === row.note_id);
-      if (local && !local.seen) {
-        maybeNotifyRead(row.note_id);
-        markSentSeen(row.note_id);
-      }
-    }
-    state.notifs = own;
-    renderApp();
-  } catch {}
-}
 
 // Init
 (async()=>{
   flushQueue();
   purgeOldData();
-  syncNotifications();
 })();
-setInterval(()=>{ if (navigator.onLine) syncNotifications(); }, 9000);
 
 // Styles
 const css = {
@@ -188,10 +137,6 @@ const css = {
   rev:  {background:"#0d0d0f",border:"1px solid #2a2530",borderRadius:"8px",padding:"1rem",
     marginTop:"1rem",whiteSpace:"pre-wrap",fontSize:"15px",color:"#e0dae8",lineHeight:"1.65"},
   empty:{textAlign:"center",color:"#6b6475",fontSize:"14px"}
-  ,
-  ni:   {padding:"11px 14px",borderBottom:"1px solid #1a1820"},
-  dot:  {width:"7px",height:"7px",borderRadius:"50%",background:"#c9a0f0",marginTop:"6px",flexShrink:"0",display:"inline-block"},
-  row:  {display:"flex",gap:"10px"}
 };
 
 // Render
@@ -200,9 +145,6 @@ function renderApp() {
   root.innerHTML="";
   const app = el("div",{style:css.app});
   app.appendChild(el("div",{style:css.logo},"NOTES"));
-const apkBtn = el("div",{style:{textAlign:"center",marginBottom:"1rem"}});
-apkBtn.appendChild(el("a",{href:"/notes.apk",download:"notes.apk",style:{fontSize:"12px",color:"#6b6475",textDecoration:"none",border:"1px solid #2a2530",borderRadius:"6px",padding:"5px 14px"}},"Download Android App"));
-app.appendChild(apkBtn);
 
   if (!navigator.onLine) {
     const q = getQueue();
@@ -217,10 +159,6 @@ app.appendChild(apkBtn);
       setState({tab:t,err:"",ok:"",revealed:null,created:false});
     }}, label);
     tabBar.appendChild(btn);
-  }
-
-  if (state.notifs.length && state.tab !== "boom") {
-    app.appendChild(el("div",{style:{...css.suc,marginBottom:"1rem"}},"Your note was retrieved."));
   }
   app.appendChild(tabBar);
 
@@ -278,7 +216,6 @@ function renderNew(card) {
       const note = {id:genId(), cipher, self_destruct:true, created_at:Date.now()};
       if (navigator.onLine) { await db("notes","POST",note); }
       else { const q=getQueue(); q.push(note); saveQueue(q); }
-      trackSentNote(note.id);
       drafts.newMsg = "";
       drafts.newPass = "";
       saveDrafts();
@@ -325,7 +262,6 @@ function renderRetrieve(card) {
       }
       if (!found) { state.err="Wrong password or no matching note."; renderApp(); return; }
       await db("notes?id=eq."+found.id,"DELETE");
-      await db("notifications","POST",{note_id:found.id,time:Date.now()});
       drafts.retrievePass = "";
       saveDrafts();
       setState({revealed:text,err:"",ok:""});
@@ -334,23 +270,7 @@ function renderRetrieve(card) {
 }
 
 function renderBoom(card) {
-  if (!state.notifs.length) {
-    card.appendChild(el("div",{style:css.empty},"No notifications yet."));
-    return;
-  }
-  for (const n of state.notifs) {
-    const row = el("div",{style:css.ni});
-    const wrap = el("div",{style:css.row});
-    wrap.appendChild(el("span",{style:css.dot}));
-    const info = el("div");
-    info.appendChild(el("div",{style:{fontSize:"13px",color:"#c9c5d0"}},
-      "Your note ",span("#"+String(n.note_id || "").slice(0,8).toUpperCase(),{color:"#c9a0f0"})," was retrieved."
-    ));
-    info.appendChild(el("div",{style:{fontSize:"11px",color:"#6b6475",marginTop:"2px"}},fmt(n.time)));
-    wrap.appendChild(info);
-    row.appendChild(wrap);
-    card.appendChild(row);
-  }
+  card.appendChild(el("div",{style:css.empty},"No notifications yet."));
 }
 
 // Register service worker
@@ -359,8 +279,5 @@ if ("serviceWorker" in navigator) {
 }
 
 renderApp();
-if ("Notification" in window && Notification.permission === "default") {
-  Notification.requestPermission().catch(()=>{});
-}
-window.addEventListener("online",  ()=>{ flushQueue(); syncNotifications(); renderApp(); });
+window.addEventListener("online",  ()=>{ flushQueue(); renderApp(); });
 window.addEventListener("offline", ()=>renderApp());
