@@ -122,15 +122,23 @@ function el(tag, props={}, ...kids) {
 function span(text,style={}) { return el("span",{style},text); }
 
 // State — note: msg and pass are NOT in state to avoid re-render wiping inputs
-let state = { tab:"new", err:"", ok:"", revealed:null, created:false, notifs:[] };
+let state = { tab:"new", err:"", ok:"", revealed:null, created:false, alert:"" };
 let drafts = loadDrafts();
 function setState(patch) { Object.assign(state,patch); renderApp(); }
+let alertTimer = null;
+function showRetrievedAlert() {
+  state.alert = "Your note was retrieved.";
+  renderApp();
+  if (alertTimer) clearTimeout(alertTimer);
+  alertTimer = setTimeout(() => {
+    state.alert = "";
+    renderApp();
+  }, 3500);
+}
 async function syncNotifications() {
   pruneSentNotes();
   const sent = getSentNotes();
   if (!navigator.onLine || !sent.length) {
-    state.notifs = [];
-    renderApp();
     return;
   }
   try {
@@ -138,10 +146,11 @@ async function syncNotifications() {
     const own = (rows || []).filter(row => sent.some(n => n.id === row.note_id));
     for (const row of own) {
       const local = sent.find(n => n.id === row.note_id);
-      if (local && !local.seen) markSentSeen(row.note_id);
+      if (local && !local.seen) {
+        markSentSeen(row.note_id);
+        showRetrievedAlert();
+      }
     }
-    state.notifs = own;
-    renderApp();
   } catch {}
 }
 
@@ -195,14 +204,14 @@ function renderApp() {
     ));
   }
 
-  if (state.notifs.length && state.tab !== "boom") {
-    app.appendChild(el("div",{style:{...css.suc,marginBottom:"1rem"}},"Your note was retrieved."));
+  if (state.alert && state.tab !== "activity") {
+    app.appendChild(el("div",{style:{...css.suc,marginBottom:"1rem"}},state.alert));
   }
 
   const tabBar = el("div",{style:css.tabs});
-  for (const [t,label] of [["new","New"],["retrieve","Retrieve"],["boom","Boom"]]) {
+  for (const [t,label] of [["new","New"],["retrieve","Retrieve"],["activity","Activity"]]) {
     const btn = el("button",{style:css.tab(state.tab===t), onClick:()=>{
-      setState({tab:t,err:"",ok:"",revealed:null,created:false});
+      setState({tab:t,err:"",ok:"",revealed:null,created:false,alert:t==="activity"?"":state.alert});
     }}, label);
     tabBar.appendChild(btn);
   }
@@ -211,7 +220,7 @@ function renderApp() {
   const card = el("div",{style:css.card});
   if (state.tab==="new") renderNew(card);
   else if (state.tab==="retrieve") renderRetrieve(card);
-  else renderBoom(card);
+  else renderActivity(card);
 
   app.appendChild(card);
   root.appendChild(app);
@@ -317,24 +326,8 @@ function renderRetrieve(card) {
   });
 }
 
-function renderBoom(card) {
-  if (!state.notifs.length) {
-    card.appendChild(el("div",{style:css.empty},"No notifications yet."));
-    return;
-  }
-  for (const n of state.notifs) {
-    const row = el("div",{style:css.ni});
-    const wrap = el("div",{style:css.row});
-    wrap.appendChild(el("span",{style:css.dot}));
-    const info = el("div");
-    info.appendChild(el("div",{style:{fontSize:"13px",color:"#c9c5d0"}},
-      "Your note ",span("#"+String(n.note_id || "").slice(0,8).toUpperCase(),{color:"#c9a0f0"})," was retrieved."
-    ));
-    info.appendChild(el("div",{style:{fontSize:"11px",color:"#6b6475",marginTop:"2px"}},fmt(n.time)));
-    wrap.appendChild(info);
-    row.appendChild(wrap);
-    card.appendChild(row);
-  }
+function renderActivity(card) {
+  card.appendChild(el("div",{style:css.empty},"No activity stored."));
 }
 
 // Register service worker
