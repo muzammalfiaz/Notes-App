@@ -3,6 +3,7 @@
 const SB = "https://yhqfdeslngsarmhcetoa.supabase.co";
 const KEY = "sb_publishable_c2O9q1-ov-siNJ6H_RCyrQ_h_TXI6EL";
 const QUEUE_KEY = "notes_offline_queue";
+const DRAFTS_KEY = "notes_drafts";
 const TWO_DAYS = 2 * 24 * 60 * 60 * 1000;
 
 // AES-256-GCM Encryption
@@ -61,6 +62,21 @@ async function purgeOldData() {
 // Offline queue
 function getQueue() { try { return JSON.parse(localStorage.getItem(QUEUE_KEY)||"[]"); } catch { return []; } }
 function saveQueue(q) { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); }
+function loadDrafts() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(DRAFTS_KEY) || "{}");
+    return {
+      newMsg: typeof saved.newMsg === "string" ? saved.newMsg : "",
+      newPass: typeof saved.newPass === "string" ? saved.newPass : "",
+      retrievePass: typeof saved.retrievePass === "string" ? saved.retrievePass : ""
+    };
+  } catch {
+    return { newMsg:"", newPass:"", retrievePass:"" };
+  }
+}
+function saveDrafts() {
+  sessionStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+}
 async function flushQueue() {
   const q = getQueue();
   if (!q.length) return;
@@ -89,7 +105,7 @@ function span(text,style={}) { return el("span",{style},text); }
 
 // State — note: msg and pass are NOT in state to avoid re-render wiping inputs
 let state = { tab:"new", notifs:[], err:"", ok:"", revealed:null, created:false };
-let drafts = { newMsg:"", newPass:"", retrievePass:"" };
+let drafts = loadDrafts();
 function setState(patch) { Object.assign(state,patch); renderApp(); }
 
 // Poll notifications
@@ -187,7 +203,7 @@ function renderNew(card) {
     style:css.ta,
     placeholder:"Write here",
     value:drafts.newMsg,
-    onInput:(e)=>{ drafts.newMsg = e.target.value; }
+    onInput:(e)=>{ drafts.newMsg = e.target.value; saveDrafts(); }
   });
   card.appendChild(ta);
 
@@ -197,7 +213,7 @@ function renderNew(card) {
     style:css.inp,
     placeholder:"Choose a password...",
     value:drafts.newPass,
-    onInput:(e)=>{ drafts.newPass = e.target.value; }
+    onInput:(e)=>{ drafts.newPass = e.target.value; saveDrafts(); }
   });
   card.appendChild(pi);
 
@@ -221,6 +237,7 @@ function renderNew(card) {
       else { const q=getQueue(); q.push(note); saveQueue(q); }
       drafts.newMsg = "";
       drafts.newPass = "";
+      saveDrafts();
       setState({created:true,err:""});
     } catch {
       state.err="Failed to save. Try again.";
@@ -239,7 +256,7 @@ function renderRetrieve(card) {
     style:css.inp,
     placeholder:"Enter password...",
     value:drafts.retrievePass,
-    onInput:(e)=>{ drafts.retrievePass = e.target.value; }
+    onInput:(e)=>{ drafts.retrievePass = e.target.value; saveDrafts(); }
   });
   card.appendChild(pi);
 
@@ -264,9 +281,10 @@ function renderRetrieve(card) {
       }
       if (!found) { state.err="Wrong password or no matching note."; renderApp(); return; }
       await db("notes?id=eq."+found.id,"DELETE");
-      await db("notifications","POST",{note_id:found.id,time:Date.now(),read:false});
+      await db("notifications","DELETE").catch(()=>{});
       drafts.retrievePass = "";
-      setState({revealed:text,err:"",ok:""});
+      saveDrafts();
+      setState({revealed:text,err:"",ok:"",notifs:[]});
     } catch { state.err="Something went wrong."; renderApp(); }
   });
 }
