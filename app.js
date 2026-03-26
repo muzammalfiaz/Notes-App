@@ -200,6 +200,9 @@ function renderApp() {
   root.innerHTML="";
   const app = el("div",{style:css.app});
   app.appendChild(el("div",{style:css.logo},"NOTES"));
+const apkBtn = el("div",{style:{textAlign:"center",marginBottom:"1rem"}});
+apkBtn.appendChild(el("a",{href:"/notes.apk",download:"notes.apk",style:{fontSize:"12px",color:"#6b6475",textDecoration:"none",border:"1px solid #2a2530",borderRadius:"6px",padding:"5px 14px"}},"Download Android App"));
+app.appendChild(apkBtn);
 
   if (!navigator.onLine) {
     const q = getQueue();
